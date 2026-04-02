@@ -1,7 +1,7 @@
 # to start new project run:
 # nix-shell -p elixir
 # mix archive.install hex phx_new
-# mix phx.new appname --no-tailwind
+# mix phx.new appname --no-tailwind --database sqlite3
 
 { pkgs ? import
     (fetchTarball "https://github.com/NixOS/nixpkgs/tarball/nixos-25.11")
@@ -27,7 +27,7 @@ let
     nixpkgs-fmt
     openssl
     inotify-tools
-    postgresql
+    sqlite
   ];
 
   shell = pkgs.mkShell {
