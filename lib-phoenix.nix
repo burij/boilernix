@@ -41,6 +41,8 @@ let
         openssl rand -base64 64 | \
         sudo tee /var/lib/${appName}/phoenix_secret > /dev/null &&
         sudo chmod 600 /var/lib/${appName}/phoenix_secret'
+      export ERL_DRV_INT="inet"
+      export ERL_DRV_LISTEN="0"
     '';
   };
 
