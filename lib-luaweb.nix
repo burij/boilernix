@@ -1,7 +1,6 @@
-{ pkgs ? import
-    (fetchTarball "https://github.com/NixOS/nixpkgs/tarball/nixos-25.11")
-    { config = { }; overlays = [ ]; }
-}:
+{ pkgs ? import (fetchTarball
+    "https://github.com/NixOS/nixpkgs/tarball/nixos-26.05")
+  {} }:
 
 let
   lib = pkgs.lib;
@@ -9,90 +8,77 @@ let
   appVersion = lib.strings.fileContents ./VERSION;
   appPort = 8152;
 
-  luaEnv = pkgs.luajit.withPackages (ps: with ps; [
-    luarocks
-    http
-  ]);
-
-  dependencies = with pkgs; [
-    wget
-    nixpkgs-fmt
+  runtimeDeps = with pkgs; [
     pandoc
+    wget
   ];
 
-  luaLightWings = {
+  devDeps = with pkgs; [
+    nixpkgs-fmt
+    pkgs.luajitPackages.luarocks
+  ];
+
+  luaEnv = pkgs.luajit.withPackages (ps: with ps; [ http ]);
+
+  luaLightWings = pkgs.fetchurl {
     url = "https://raw.githubusercontent.com/burij/"
-      + "lua-light-wings/refs/tags/v.0.4/modules/lua-light-wings.lua";
-    sha256 = "sha256-Tczj+XNIobX64Cncm0/rbDwMizUDhRmeyjFwrJrDCco=";
+      + "lahna/lua-light-wings/refs/tags/"
+      + "v.0.4/modules/lua-light-wings.lua";
+    sha256 =
+      "sha256-Tczj+XNIobX64Cncm0/rbDwMizUDhRmeyjFwrJrDCco=";
   };
 
-  shell = pkgs.mkShell {
-    buildInputs = [ luaEnv dependencies ];
-    shellHook = ''
-      # export LUAOS="./conf.lua"
-      alias run='lua main.lua'
-      alias lahna='./result/bin/lahna'
-      alias form='nixpkgs-fmt lib.nix'
-      mkdir modules
+  luaCpath =
+    "${luaEnv}/lib/lua/${luaEnv.lua.luaversion}/?.so";
+  runtimePath = lib.makeSearchPath "bin" runtimeDeps;
 
-      cp ${pkgs.fetchurl luaLightWings} ./modules/lua-light-wings.lua
+  wrapperArgs = [
+    "--add-flags"
+    "\"$out/lib/$pname/main.lua\""
+    "--set" "LUA_PATH"
+    "\"$out/lib/$pname/?.lua;$out/lib/$pname/?/init.lua\""
+    "--set" "LUA_CPATH" "\"${luaCpath}\""
+    "--prefix" "PATH" ":" "\"${runtimePath}\""
+  ];
 
-    '';
-  };
+  luajitWrapper = "makeWrapper"
+    + " ${luaEnv}/bin/luajit"
+    + " $out/bin/$pname"
+    + " ${lib.concatStringsSep " " wrapperArgs}";
 
   package = pkgs.stdenv.mkDerivation {
     pname = appName;
     version = appVersion;
-
     src = ./.;
-
-    # src = pkgs.fetchFromGitHub {
-    #   owner = "burij";
-    #   repo = appName;
-    #   rev = appVersion;
-    #   sha256 = "";
-    # };
-
-    extraFile = pkgs.fetchurl luaLightWings;
-
+    dontCmake = true;
     nativeBuildInputs = [ pkgs.makeWrapper ];
-    buildInputs = [ luaEnv dependencies ];
+    buildInputs = [ luaEnv ] ++ runtimeDeps;
 
     installPhase = ''
-      mkdir -p $out/bin
-      mkdir -p $out/lib
-      cp -r . $out/lib/$pname
-      cp -r ./modules/* $out/lib/$pname/
-      cp $extraFile $out/lib/$pname/lua-light-wings.lua
+      mkdir -p $out/lib/$pname
+      find . -mindepth 1 -maxdepth 1 ! -path "./.*" |
+        xargs -r -I {} mv {} $out/lib/$pname/
 
-      makeWrapper ${luaEnv}/bin/luarocks $out/bin/luarocks
-      makeWrapper ${luaEnv}/bin/luajit $out/bin/$pname \
-        --add-flags "$out/lib/$pname/main.lua" \
-        --set LUA_PATH "$out/lib/$pname/?.lua;$out/lib/$pname/?/init.lua;" \
-        --set LUA_CPATH "${luaEnv}/lib/lua/${luaEnv.lua.luaversion}/?.so" \
-        --prefix PATH : ${pkgs.pandoc}/bin
-
-      # Additional custom wrapper
-      cat > $out/bin/$pname-extra <<EOF
-      #!${pkgs.stdenv.shell}
-      exec ${luaEnv}/bin/lua "$out/lib/$pname/main.lua" "\$@"
-      EOF
-      chmod +x $out/bin/$pname-extra
-
+      ${luajitWrapper}
     '';
+  };
 
-    meta = with pkgs.lib; {
-      description = "Lahna";
-      license = licenses.mit;
-      platforms = platforms.all;
-    };
+  shell = pkgs.mkShell {
+    buildInputs = runtimeDeps ++ devDeps ++ [ luaEnv ];
+    shellHook = ''
+      alias run='lua main.lua'
+      alias lahna='./result/bin/lahna'
+      alias form='nixpkgs-fmt lib.nix'
+      mkdir -p modules
+      cp ${luaLightWings} ./modules/lua-light-wings.lua
+    '';
   };
 
   container = { config, lib, pkgs, ... }: {
     containers.${appName} = {
       autoStart = true;
       privateNetwork = false;
-      privateUsers = "no";
+      privateUsers = "pick";
       hostAddress = "10.0.0.1";
       localAddress = "10.0.0.2";
 
@@ -109,28 +95,29 @@ let
         };
       };
 
-      config = { config, pkgs, ... }: {
-        system.stateVersion = "25.11";
+      config = { config, pkgs, ... }:
+        { system.stateVersion = "25.11";
+          environment.systemPackages =
+            [ package ] ++ runtimeDeps;
 
-        environment.systemPackages = with pkgs; [
-          package
-        ];
-
-        systemd.services."${appName}" = {
-          description = "${appName}-daemon";
-          after = [ "network.target" ];
-          environment = {
-            LAHNA_HOST = "0.0.0.0";
-            LAHNA_PORT = "${toString appPort}";
+          systemd.services."${appName}" = {
+            description = "${appName}-daemon";
+            after = [ "network.target" ];
+            environment = {
+              LAHNA_HOST = "0.0.0.0";
+              LAHNA_PORT = "${toString appPort}";
           };
           serviceConfig = {
             Type = "simple";
-            ExecStart = "${package}/bin/${appName} /var/lib/${appName}/conf.lua";
+            ExecStart =
+              "${package}/bin/${appName}"
+              + " /var/lib/${appName}/conf.lua";
             Restart = "always";
             RestartSec = 10;
             StandardOutput = "journal";
             StandardError = "journal";
-            WorkingDirectory = "${package}/lib/${appName}";
+            WorkingDirectory =
+              "${package}/lib/${appName}";
           };
           wantedBy = [ "multi-user.target" ];
         };
@@ -141,7 +128,8 @@ let
         };
         users.groups.${appName} = { };
 
-        networking.firewall.allowedTCPPorts = [ appPort ];
+        networking.firewall.allowedTCPPorts =
+          [ appPort ];
       };
     };
   };
