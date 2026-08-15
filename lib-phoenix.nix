@@ -16,8 +16,8 @@ let
   appPort = 8151;
 
   elixirEnv = with pkgs; [
-    elixir
-    erlang
+    beamPackages.elixir
+    beamPackages.erlang
   ];
 
   beamPackages = pkgs.beam.packagesWith pkgs.beam.interpreters.erlang;
@@ -41,6 +41,26 @@ let
         openssl rand -base64 64 | \
         sudo tee /var/lib/${appName}/phoenix_secret > /dev/null &&
         sudo chmod 600 /var/lib/${appName}/phoenix_secret'
+      alias deploy='rsync -a --exclude .git --exclude result-package \
+        --exclude erl_crash.dump --exclude "*.db*" \
+        ./ /srv/config/${appName}/${appVersion}/ && \
+        sudo mkdir -p /var/lib/${appName}/db && \
+        { [ -f /var/lib/${appName}/phoenix_secret ] || \
+          openssl rand -base64 64 | \
+          sudo tee /var/lib/${appName}/phoenix_secret > /dev/null; } && \
+        { [ -f /var/lib/${appName}/admin_token ] || \
+          openssl rand -hex 32 | \
+          sudo tee /var/lib/${appName}/admin_token > /dev/null; } && \
+        sudo chmod 600 /var/lib/${appName}/phoenix_secret \
+          /var/lib/${appName}/admin_token && \
+        (grep -qF "/srv/config/${appName}/${appVersion}/container.nix" \
+          /etc/nixos/System/hosts/box/config.nix 2>/dev/null || \
+          echo "WARNING: add /srv/config/${appName}/${appVersion}/container.nix \
+          to the imports in /etc/nixos/System/hosts/box/config.nix") && \
+        sudo nixos-rebuild switch && \
+        curl -s -o /dev/null \
+          -w "fortyleeni live: http://localhost:${toString appPort}/ %{http_code}\n" \
+          http://localhost:${toString appPort}/'        
       export ERL_DRV_INT="inet"
       export ERL_DRV_LISTEN="0"
     '';
